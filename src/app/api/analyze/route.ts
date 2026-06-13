@@ -1,8 +1,21 @@
 import { db } from '@/lib/db'
 import { NextRequest, NextResponse } from 'next/server'
 import ZAI from 'z-ai-web-dev-sdk'
+import { requireAuthResponse, withTimeout, ResilienceError } from '@/lib/resilience'
+
+// Hard ceiling for the upstream LLM call so a hung provider cannot pin a
+// request open indefinitely.
+const LLM_TIMEOUT_MS = 30_000
 
 export async function POST(request: NextRequest) {
+  // Fail-closed auth gate: this route triggers paid LLM work and DB writes,
+  // so it must not be reachable anonymously. The expected token is a static
+  // server-side API key; when it is unset the helper returns 503 (never allow).
+  const authError = requireAuthResponse(request, {
+    token: process.env.ANALYZE_API_KEY,
+  })
+  if (authError) return authError
+
   try {
     const body = await request.json()
     const { anomalyId } = body
@@ -31,21 +44,26 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Use z-ai-web-dev-sdk for AI analysis
-    const zai = await ZAI.create()
-    const completion = await zai.chat.completions.create({
-      messages: [
-        {
-          role: 'system',
-          content: 'You are ChainSight AI, an expert on-chain analyst specializing in detecting and analyzing blockchain anomalies on the Mantle Network. Provide detailed risk assessments and actionable recommendations. Be specific about amounts, addresses, and patterns. Respond in plain text with clear sections: SUMMARY, RISK LEVEL (low/medium/high/critical), and RECOMMENDATION.',
-        },
-        {
-          role: 'user',
-          content: `Analyze this on-chain anomaly:\n\nType: ${anomaly.type}\nSeverity: ${anomaly.severity}\nConfidence: ${(anomaly.confidence * 100).toFixed(0)}%\nDescription: ${anomaly.description}\nMetadata: ${anomaly.metadata}\n\nProvide: 1) A brief summary 2) Risk level assessment 3) Actionable recommendation`,
-        },
-      ],
-      temperature: 0.3,
-    })
+    // Use z-ai-web-dev-sdk for AI analysis, bounded by a hard timeout so a
+    // stalled provider releases the request instead of hanging open.
+    const zai = await withTimeout(ZAI.create(), LLM_TIMEOUT_MS, 'ZAI.create')
+    const completion = await withTimeout(
+      zai.chat.completions.create({
+        messages: [
+          {
+            role: 'system',
+            content: 'You are ChainSight AI, an expert on-chain analyst specializing in detecting and analyzing blockchain anomalies on the Mantle Network. Provide detailed risk assessments and actionable recommendations. Be specific about amounts, addresses, and patterns. Respond in plain text with clear sections: SUMMARY, RISK LEVEL (low/medium/high/critical), and RECOMMENDATION.',
+          },
+          {
+            role: 'user',
+            content: `Analyze this on-chain anomaly:\n\nType: ${anomaly.type}\nSeverity: ${anomaly.severity}\nConfidence: ${(anomaly.confidence * 100).toFixed(0)}%\nDescription: ${anomaly.description}\nMetadata: ${anomaly.metadata}\n\nProvide: 1) A brief summary 2) Risk level assessment 3) Actionable recommendation`,
+          },
+        ],
+        temperature: 0.3,
+      }),
+      LLM_TIMEOUT_MS,
+      'ZAI.chat.completions.create',
+    )
 
     const rawResponse = completion.choices?.[0]?.message?.content || 'Analysis unavailable'
 
@@ -90,6 +108,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ analysis })
   } catch (error) {
     console.error('Analyze API error:', error)
+    if (error instanceof ResilienceError && error.kind === 'timeout') {
+      return NextResponse.json(
+        { error: 'AI analysis timed out, please retry' },
+        { status: 504 },
+      )
+    }
     return NextResponse.json({ error: 'Failed to analyze anomaly' }, { status: 500 })
   }
 }

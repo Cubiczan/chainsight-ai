@@ -1,7 +1,15 @@
 import { db } from '@/lib/db'
 import { NextResponse } from 'next/server'
+import { isOffline } from '@/lib/chain/config'
+import { getDashboardData } from '@/lib/chain/dataSource'
 
 export async function GET() {
+  // Offline / mock mode: serve embedded synthetic on-chain data so the dashboard
+  // is always populated with zero credentials and zero database.
+  if (isOffline()) {
+    return NextResponse.json(await getDashboardData())
+  }
+
   try {
     const [
       totalTransactions,
@@ -92,7 +100,10 @@ export async function GET() {
         .map(([time, dexes]) => ({ time, ...dexes })),
     })
   } catch (error) {
-    console.error('Dashboard API error:', error)
-    return NextResponse.json({ error: 'Failed to fetch dashboard data' }, { status: 500 })
+    // Last-resort fallback: if the live DB read fails (e.g. no database in a
+    // fresh checkout), degrade to the embedded synthetic tier instead of a 500
+    // so the dashboard still renders.
+    console.error('Dashboard API error, falling back to mock tier:', error)
+    return NextResponse.json(await getDashboardData({ preferMock: true }))
   }
 }

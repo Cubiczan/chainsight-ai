@@ -157,6 +157,52 @@ DATABASE_URL=file:./db/custom.db
 
 ---
 
+## Offline / mock mode
+
+ChainSight runs — dashboard populated, anomalies listed, "Run AI Analysis"
+working — with **zero credentials and zero database**, using the same three-tier
+fallback as the rest of the Cubiczan stack (**live → local cache → embedded
+synthetic mock**).
+
+```bash
+# Boot the app with no chain RPC and no LLM key — serves synthetic on-chain data:
+bun run dev
+
+# Run the offline smoke test (no keys, no DB, no network):
+bun run test:offline
+# equivalently: bun run test
+```
+
+### How mock mode is triggered
+
+Detection lives in `src/lib/chain/config.ts`. Offline/mock mode is active when
+**either**:
+
+| Trigger | Effect |
+|---------|--------|
+| `MANTLE_RPC_URL` unset (or the placeholder) | Auto-detected → dashboard serves synthetic on-chain data |
+| `CHAINSIGHT_OFFLINE=1` (or `mock` / `true`) | Forces synthetic data regardless of other creds |
+| `ANALYZE_API_KEY` unset | `POST /api/analyze` returns deterministic synthetic analysis instead of failing closed |
+
+### The three tiers
+
+| Tier | Source | When used |
+|------|--------|-----------|
+| **live** | Mantle RPC/indexer (`MANTLE_RPC_URL`) | Only when configured and offline mode is off |
+| **cache** | local Prisma/SQLite DB (`bun run seed`) | When the DB has ingested rows |
+| **mock** | embedded synthetic dataset (`src/lib/chain/mockData.ts`) | Always available; the zero-setup default |
+
+Every dashboard response is tagged with `source` (`live` / `cache` / `mock`) for
+provenance. The synthetic dataset is deterministic (seeded PRNG) so the smoke
+test is stable. When a live LLM **is** configured, `POST /api/analyze` keeps its
+fail-closed bearer-token auth gate — the mock tier only applies when no key is
+set.
+
+Relevant files: `src/lib/chain/config.ts`, `src/lib/chain/mockData.ts`,
+`src/lib/chain/dataSource.ts`, `src/lib/chain/offline.test.ts`.
+
+---
+
 ## Built For
 
 - [Mantle Network](https://www.mantle.xyz/) — Premier L2 distribution layer

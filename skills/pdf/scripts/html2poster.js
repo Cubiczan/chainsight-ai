@@ -35,6 +35,22 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
+function resolveWithinBase(userPath, baseDir = process.cwd()) {
+  if (typeof userPath !== 'string' || userPath.length === 0 || userPath.includes('\0')) {
+    throw new Error(`Unsafe path rejected: ${userPath}`);
+  }
+  let raw = userPath.startsWith('file://') ? userPath.slice('file://'.length) : userPath;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw)) {
+    throw new Error(`Unsafe path rejected: ${userPath}`);
+  }
+  const base = path.resolve(baseDir);
+  const resolved = path.resolve(base, raw);
+  if (resolved !== base && !resolved.startsWith(base + path.sep)) {
+    throw new Error(`Path traversal rejected: ${userPath}`);
+  }
+  return resolved;
+}
+
 // ── Chromium resolution (shared logic with html2pdf-next.js) ──
 
 function resolveChromium(chromiumObj) {
@@ -99,7 +115,13 @@ Options:
 
 async function main() {
   const { input, output, width, maxHeight } = parseArgs(process.argv);
-  const absIn = path.resolve(input);
+  let absIn;
+  try {
+    absIn = resolveWithinBase(input);
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
+  }
   const absOut = path.resolve(output);
 
   if (!fs.existsSync(absIn)) {

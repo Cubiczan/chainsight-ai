@@ -42,6 +42,29 @@ const path = require('path');
 const sharp = require('sharp');
 const fs = require('fs');
 
+// Resolve a user-supplied path and reject anything that escapes baseDir (cwd by default).
+function resolveWithinBase(userPath, baseDir = process.cwd()) {
+  if (typeof userPath !== 'string' || userPath.length === 0 || userPath.includes('\0')) {
+    throw new Error(`Unsafe path rejected: ${userPath}`);
+  }
+  let raw = userPath.startsWith('file://') ? userPath.slice('file://'.length) : userPath;
+  // Remote / data URLs are not local filesystem paths
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw)) {
+    throw new Error(`Unsafe path rejected: ${userPath}`);
+  }
+  const base = path.resolve(baseDir);
+  const resolved = path.resolve(base, raw);
+  if (resolved !== base && !resolved.startsWith(base + path.sep)) {
+    throw new Error(`Path traversal rejected: ${userPath}`);
+  }
+  return resolved;
+}
+
+function resolveLocalAssetPath(userPath, baseDir = process.cwd()) {
+  if (/^(https?:|data:|blob:)/i.test(userPath)) return userPath;
+  return resolveWithinBase(userPath, baseDir);
+}
+
 const PT_PER_PX = 0.75;
 const PX_PER_IN = 96;
 const EMU_PER_IN = 914400;
@@ -298,9 +321,7 @@ function validateTextBoxPosition(slideData, bodyDimensions) {
 // Helper: Add background to slide
 async function addBackground(slideData, targetSlide, pres, tmpDir) {
   if (slideData.background.type === 'image' && slideData.background.path) {
-    let imagePath = slideData.background.path.startsWith('file://')
-      ? slideData.background.path.replace('file://', '')
-      : slideData.background.path;
+    let imagePath = resolveLocalAssetPath(slideData.background.path);
     // PptxGenJS slide.background = { path } is unreliable for local files;
     // use addImage at (0,0) covering the full slide instead.
     const slideW = pres.presLayout ? pres.presLayout.width / EMU_PER_IN : 10;
@@ -325,7 +346,7 @@ function addElements(slideData, targetSlide, pres, tmpDir) {
 
   for (const el of sortedElements) {
     if (el.type === 'image') {
-      let imagePath = el.src.startsWith('file://') ? el.src.replace('file://', '') : el.src;
+      let imagePath = resolveLocalAssetPath(el.src);
       targetSlide.addImage({
         path: fixImageExtension(imagePath, tmpDir),
         x: el.position.x, y: el.position.y, w: el.position.w, h: el.position.h
@@ -1234,7 +1255,7 @@ async function html2pptx(htmlFile, pres, options = {}) {
     let bodyDimensions;
     let slideData;
 
-    const filePath = path.isAbsolute(htmlFile) ? htmlFile : path.join(process.cwd(), htmlFile);
+    const filePath = resolveWithinBase(htmlFile);
     const validationErrors = [];
 
     try {

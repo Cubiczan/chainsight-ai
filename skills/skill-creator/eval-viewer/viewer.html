@@ -763,11 +763,14 @@
     // ---- Render outputs ----
     function renderOutputs(run) {
       const container = document.getElementById("outputs-body");
-      container.innerHTML = "";
+      container.replaceChildren();
 
       const outputs = run.outputs || [];
       if (outputs.length === 0) {
-        container.innerHTML = '<div class="empty-state">No output files</div>';
+        const empty = document.createElement("div");
+        empty.className = "empty-state";
+        empty.textContent = "No output files";
+        container.appendChild(empty);
         return;
       }
 
@@ -846,7 +849,7 @@
 
           const htmlStr = XLSX.utils.sheet_to_html(ws, { editable: false });
           const wrapper = document.createElement("div");
-          wrapper.innerHTML = htmlStr;
+          setSafeHtml(wrapper, htmlStr);
           container.appendChild(wrapper);
         }
       } catch (err) {
@@ -901,7 +904,7 @@
       html += '</ul>';
 
       html += '</div>';
-      content.innerHTML = html;
+      setSafeHtml(content, html);
     }
 
     function toggleGrades() {
@@ -928,7 +931,7 @@
       document.getElementById("prev-outputs-arrow").classList.remove("open");
 
       // Render the files into the content area
-      content.innerHTML = "";
+      content.replaceChildren();
       const wrapper = document.createElement("div");
       wrapper.style.padding = "1rem";
 
@@ -1097,9 +1100,33 @@
     }
 
     function escapeHtml(text) {
-      const div = document.createElement("div");
-      div.textContent = text;
-      return div.innerHTML;
+      return String(text ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    // Parse markup without document.write / element.innerHTML assignment.
+    function setSafeHtml(el, html) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(String(html ?? ""), "text/html");
+      const forbidden = new Set(["script", "iframe", "object", "embed", "link", "meta", "base"]);
+      for (const node of [...doc.body.querySelectorAll("*")]) {
+        if (forbidden.has(node.tagName.toLowerCase())) {
+          node.remove();
+          continue;
+        }
+        for (const attr of [...node.attributes]) {
+          const name = attr.name.toLowerCase();
+          const value = attr.value.trim();
+          if (name.startsWith("on") || /^(javascript|vbscript|data):/i.test(value)) {
+            node.removeAttribute(attr.name);
+          }
+        }
+      }
+      el.replaceChildren(...Array.from(doc.body.childNodes));
     }
 
     // ---- View switching ----
@@ -1314,7 +1341,7 @@
         html += "</ul></div>";
       }
 
-      container.innerHTML = html;
+      setSafeHtml(container, html);
     }
 
     // ---- Start ----

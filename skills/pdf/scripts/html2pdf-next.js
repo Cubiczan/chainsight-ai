@@ -24,6 +24,22 @@ const fs = require('fs');
 const path = require('path');
 const { execSync, spawnSync } = require('child_process');
 
+function resolveWithinBase(userPath, baseDir = process.cwd()) {
+  if (typeof userPath !== 'string' || userPath.length === 0 || userPath.includes('\0')) {
+    throw new Error(`Unsafe path rejected: ${userPath}`);
+  }
+  let raw = userPath.startsWith('file://') ? userPath.slice('file://'.length) : userPath;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw)) {
+    throw new Error(`Unsafe path rejected: ${userPath}`);
+  }
+  const base = path.resolve(baseDir);
+  const resolved = path.resolve(base, raw);
+  if (resolved !== base && !resolved.startsWith(base + path.sep)) {
+    throw new Error(`Path traversal rejected: ${userPath}`);
+  }
+  return resolved;
+}
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ═══════════════════════════════════════════════════════════════════
@@ -524,12 +540,19 @@ async function postProcess(pdfPath, options = {}) {
   // Merge additional PDFs
   if (options.mergeFiles && options.mergeFiles.length) {
     for (const mf of options.mergeFiles) {
-      if (!fs.existsSync(mf)) {
-        console.log(`  ⚠ Merge file not found: ${mf}`);
+      let safeMf;
+      try {
+        safeMf = resolveWithinBase(mf);
+      } catch (err) {
+        console.log(`  ⚠ ${err.message}`);
         continue;
       }
-      console.log(`  📎 Merging: ${path.basename(mf)}`);
-      const donorBytes = fs.readFileSync(mf);
+      if (!fs.existsSync(safeMf)) {
+        console.log(`  ⚠ Merge file not found: ${safeMf}`);
+        continue;
+      }
+      console.log(`  📎 Merging: ${path.basename(safeMf)}`);
+      const donorBytes = fs.readFileSync(safeMf);
       const donorDoc = await PDFDocument.load(donorBytes);
       const copiedPages = await doc.copyPages(donorDoc, donorDoc.getPageIndices());
       copiedPages.forEach(p => doc.addPage(p));
@@ -550,8 +573,16 @@ async function postProcess(pdfPath, options = {}) {
 async function convert(inputFile, outputFile, customCSS, options = {}) {
   const { width, height, mergeFiles, title } = options;
 
-  if (!fs.existsSync(inputFile)) {
-    console.error(`✗ File not found: ${inputFile}`);
+  let absIn;
+  try {
+    absIn = resolveWithinBase(inputFile);
+  } catch (err) {
+    console.error(`✗ ${err.message}`);
+    process.exit(1);
+  }
+
+  if (!fs.existsSync(absIn)) {
+    console.error(`✗ File not found: ${absIn}`);
     process.exit(1);
   }
 
@@ -570,7 +601,6 @@ async function convert(inputFile, outputFile, customCSS, options = {}) {
     console.log(`⚠ Using fallback Chromium: ${bInfo.executablePath}`);
   }
 
-  const absIn = path.resolve(inputFile);
   const absOut = path.resolve(outputFile);
 
   console.log(`\n🔄 Converting ${path.basename(inputFile)}...`);
@@ -579,6 +609,12 @@ async function convert(inputFile, outputFile, customCSS, options = {}) {
   // Read and optionally inject CSS
   let html = fs.readFileSync(absIn, 'utf-8');
   if (customCSS) {
+    try {
+      customCSS = resolveWithinBase(customCSS);
+    } catch (err) {
+      console.error(`✗ ${err.message}`);
+      process.exit(1);
+    }
     if (!fs.existsSync(customCSS)) {
       console.error(`✗ CSS file not found: ${customCSS}`);
       process.exit(1);

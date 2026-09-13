@@ -97,8 +97,25 @@ function parseArgs(): { [key: string]: any } {
   return result;
 }
 
+function resolveWithinBase(userPath: string, baseDir: string = process.cwd()): string {
+  if (typeof userPath !== 'string' || userPath.length === 0 || userPath.includes('\0')) {
+    throw new Error(`Unsafe path rejected: ${userPath}`);
+  }
+  let raw = userPath.startsWith('file://') ? userPath.slice('file://'.length) : userPath;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw)) {
+    throw new Error(`Unsafe path rejected: ${userPath}`);
+  }
+  const base = path.resolve(baseDir);
+  const resolved = path.resolve(base, raw);
+  if (resolved !== base && !resolved.startsWith(base + path.sep)) {
+    throw new Error(`Path traversal rejected: ${userPath}`);
+  }
+  return resolved;
+}
+
 function readText(filePath: string): string {
-  let content = fs.readFileSync(filePath, 'utf-8');
+  const safePath = resolveWithinBase(filePath);
+  let content = fs.readFileSync(safePath, 'utf-8');
   content = content.replace(/\r\n/g, '\n');
   content = content.replace(/\n{3,}/g, '\n\n');
   content = content.replace(/[ \t]{2,}/g, ' ');
